@@ -59,6 +59,10 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
+//SOLUCAO MLFQS==========
+fixed_t load_avg;
+//SOLUCAO MLFQS==========
+
 static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
@@ -70,6 +74,19 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+//SOLUCAO MLFQS=============================================
+void
+checkInvoke(struct thread *t, void *aux UNUSED)
+{
+  if (t->status == THREAD_BLOCKED && t->ticks_blocked > 0)
+  {
+    --t->ticks_blocked;
+	if (t->ticks_blocked == 0)
+	  thread_unblock(t);
+  }
+}
+//SOLUCAO MLFQS=============================================
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -109,6 +126,10 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
+
+  //SOLUCAO MLFQS===============
+  load_avg = FP_CONST (0);
+  //SOLUCAO MLFQS===============
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -183,6 +204,10 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
+  //SOLUCAO MLFQS===============
+  t->ticks_blocked = 0;
+  //SOLUCAO MLFQS===============
+
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -200,6 +225,11 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+
+  //SOLUCAO MLFQS===========================================
+  /* Preempt the current thread */
+  if (thread_current()->priority < priority) thread_yield();
+  //SOLUCAO MLFQS===========================================
 
   return tid;
 }
@@ -220,6 +250,92 @@ thread_block (void)
   schedule ();
 }
 
+/* Solution Code */
+/* Function for thread priority comparison. */
+bool
+thread_cmp_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+		return list_entry(a, struct thread, elem)->priority > list_entry(b, struct thread, elem)->priority;
+}
+
+/* Donate the priority of current thread to thread t. */
+void
+thread_donate_priority(struct thread *t)
+{
+  enum intr_level old_level = intr_disable();
+  thread_update_priority(t);
+ 
+  /* Remove the old t and insert the new one in order */ 
+  if (t->status == THREAD_READY)
+  {
+    list_remove(&t->elem);
+	list_insert_ordered(&ready_list, &t->elem, thread_cmp_priority, NULL);
+  }
+
+  intr_set_level(old_level);
+}
+
+//SOLUCAO MLFQS=======================================================================
+/* Make the thread hold the lock. */
+void
+thread_hold_lock(struct lock *lock)
+{
+  enum intr_level old_level = intr_disable();
+  struct thread *cur = thread_current();
+  list_insert_ordered(&cur->locks_holding, &lock->elem, lock_cmp_priority, NULL);
+
+  /* Donate the lock's priority */
+  if (cur->priority < lock->max_priority)
+  {
+    cur->priority = lock->max_priority;
+	thread_yield();
+  }
+
+  intr_set_level(old_level);
+}
+
+/* Remove the lock for the thread. */
+void
+thread_remove_lock(struct lock *lock)
+{
+  enum intr_level old_level = intr_disable();
+  list_remove(&lock->elem);
+  thread_update_priority(thread_current());
+
+  intr_set_level(old_level);
+}
+
+/* Function for lock max priority comparison. */
+bool
+lock_cmp_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  return list_entry(a, struct lock, elem)->max_priority > list_entry(b, struct lock, elem)->max_priority;
+}
+
+/* Update the thread's priority. */
+void
+thread_update_priority(struct thread *t)
+{
+  enum intr_level old_level = intr_disable();
+  int max_pri = t->base_priority;
+  int lock_pri;
+
+  /* If the thread is holding locks, pick the one with the highest max_priority.
+   * And if this priority is greater than the original base priority,
+   * the real(donated) priority would be updated.*/
+  if (!list_empty(&t->locks_holding))
+  {
+    list_sort(&t->locks_holding, lock_cmp_priority, NULL);
+	lock_pri = list_entry(list_front(&t->locks_holding), struct lock, elem)->max_priority;
+    if (max_pri < lock_pri)
+	  max_pri = lock_pri;
+  }
+  t->priority = max_pri;
+
+  intr_set_level(old_level);
+}
+//SOLUCAO MLFQS======================================================================
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -237,7 +353,9 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  //SOLUCAO MLFQS==================================================================
+  list_insert_ordered(&ready_list, &t->elem, (list_less_func *)&thread_cmp_priority, NULL);
+  //SOLUCAO MLFQS==================================================================
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -307,8 +425,12 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread) {
+    //SOLUCAO MLFQS=====================================================================
+    //list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered(&ready_list, &cur->elem, (list_less_func *)&thread_cmp_priority, NULL);
+    //SOLUCAO MLFQS=====================================================================
+  }
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -335,7 +457,23 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  //SOLUCAO MLFQS=============================================================
+  //thread_current ()->priority = new_priority;
+
+  if (thread_mlfqs)
+    return;
+  enum intr_level old_level = intr_disable();
+  struct thread *cur = thread_current();
+  int old_priority = cur->priority;
+  cur->base_priority = new_priority;
+
+  if (list_empty(&cur->locks_holding) || new_priority > old_priority)
+  {
+    cur->priority = new_priority;
+	thread_yield();
+  }
+  intr_set_level(old_level);
+  //SOLUCAO MLFQS=============================================================
 }
 
 /* Returns the current thread's priority. */
@@ -349,33 +487,98 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice UNUSED) 
 {
-  /* Not yet implemented. */
+  //SOLUCAO MLFQS================================
+  thread_current()->nice = nice;
+  mlfqs_update_priority(thread_current());
+  thread_yield();
+  //SOLUCAO MLFQS================================
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  //SOLUCAO MLFQS=====================
+  return thread_current()->nice;
+  //SOLUCAO MLFQS=====================
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  //SOLUCAO MLFQS================================
+  return FP_ROUND (FP_MULT_MIX (load_avg, 100));
+  //SOLUCAO MLFQS================================
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  //SOLUCAO MLFQS================================
+  return FP_ROUND (FP_MULT_MIX (thread_current()->recent_cpu, 100));
+  //SOLUCAO MLFQS================================
 }
+
+//SOLUCAO MLFQS=====================================================================
+void
+mlfqs_inc_recent_cpu()
+{
+  ASSERT(thread_mlfqs);
+  ASSERT(intr_context());
+
+  struct thread *cur = thread_current();
+  if (cur == idle_thread)
+    return;
+  cur->recent_cpu = FP_ADD_MIX(cur->recent_cpu, 1);
+}
+
+/* Update load_avg and recent_cpu of all threads every TIMER_FREQ ticks. */
+void
+mlfqs_update_load_avg_and_recent_cpu()
+{
+  ASSERT(thread_mlfqs);
+  ASSERT(intr_context());
+
+  size_t ready_cnt = list_size(&ready_list);
+  if (thread_current() != idle_thread)
+    ++ready_cnt;
+  load_avg = FP_ADD (FP_DIV_MIX (FP_MULT_MIX (load_avg, 59), 60), FP_DIV_MIX(FP_CONST(ready_cnt), 60));
+
+  struct thread *t;
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e))
+  {
+    t = list_entry(e, struct thread, allelem);
+    if (t != idle_thread)
+    {
+      t->recent_cpu = FP_ADD_MIX (FP_MULT (FP_DIV (FP_MULT_MIX (load_avg, 2), \ 
+					  FP_ADD_MIX (FP_MULT_MIX (load_avg, 2), 1)), t->recent_cpu), t->nice);
+	  mlfqs_update_priority(t);
+	}
+  }
+}
+
+/* Update thread's priority. */
+void
+mlfqs_update_priority(struct thread *t)
+{
+  ASSERT(thread_mlfqs);
+
+  if (t == idle_thread)
+    return;
+
+  t->priority = FP_INT_PART (FP_SUB_MIX (FP_SUB (FP_CONST (PRI_MAX), \ 
+							 FP_DIV_MIX (t->recent_cpu, 4)), 2 * t->nice));
+  if (t->priority < PRI_MIN)
+    t->priority = PRI_MIN;
+  else if (t->priority > PRI_MAX)
+    t->priority = PRI_MAX;
+}
+//SOLUCAO MLFQS=====================================================================
 
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by
@@ -464,8 +667,19 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+  //SOLUCAO MLFQS===================================
+  t->base_priority = priority;
+  list_init(&t->locks_holding);
+  t->lock_waiting4 = NULL;
+  t->nice = 0;
+  t->recent_cpu = FP_CONST (0);
+  //SOLUCAO MLFQS===================================
+
   old_level = intr_disable ();
-  list_push_back (&all_list, &t->allelem);
+  //SOLUCAO MLFQS===========================================================================
+  list_insert_ordered(&all_list, &t->allelem, (list_less_func *)&thread_cmp_priority, NULL);
+  //list_push_back (&all_list, &t->allelem);
+  //SOLUCAO MLFQS===========================================================================
   intr_set_level (old_level);
 }
 
