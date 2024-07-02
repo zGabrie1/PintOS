@@ -31,3 +31,10 @@ Personal solution to PintOS Project 1.
     - addition: ```global variable load_avg, thread_start(), thread_create()```
     - implementation: ```checkInvoke(), thread_cmp_priority(), thread_donate_priority(), thread_hold_lock(), thread_remove_lock(), lock_cmp_priority(), thread_update_priority(), mlfqs_inc_recent_cpu(), mlfqs_update_load_avg_and_recent_cpu(), mlfqs_update_priority(), thread_set_nice(), thread_get_nice(), thread_get_load_avg(), thread_get_recent_cpu()```
     - modification: ```thread_unblock(), thread_yield(), thread_set_priority(), init_thread()```
+
+
+## EXPLICAÇÃO DETALHADA DO CÓDIGO E DE SUAS MODIFICAÇÕES
+
+
+
+
